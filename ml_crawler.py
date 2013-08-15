@@ -5,6 +5,7 @@ import urllib
 import urllib2
 from bs4 import BeautifulSoup
 import cookielib
+import networkx as nx
 
 def _parsePage(url):
 	"""
@@ -33,6 +34,21 @@ def _parsePage(url):
 	the_page = response.read()
 	return the_page
 
+def userLinkConstructor (user, base):
+	"""
+	Toma un identificador de usuario y devuelve un link para ir al perfil de ese usuario
+	
+	Argumentos
+	----------
+	user: usuario del que se quiere obtener le link
+	
+	Devuelve
+	----------
+	link al profile del usuario
+	"""
+	
+	return 'http://www.mercadolibre.com.ar/jm/profile?id=%s&oper=S&baseLista=%d' %(user, base)
+
 def getTransactions (usuario):
 	"""
 	Dado un usuario devuelve las transacciones comerciales que este realizo y una lista de los usuarios con los que comercio
@@ -47,31 +63,22 @@ def getTransactions (usuario):
 	compradores: lista de usuarios que le compraron algo a el usuario objetivo
 	
 	"""
-	url = usuario
-	pagina = _parsePage(url)
+	transacciones_totales_sujeto = []
 	
-	psd_page = BeautifulSoup(pagina)
-	links = psd_page.find_all('a')
+	## Obtego la pagina
+	pagina = BeautifulSoup(_parsePage(userLinkConstructor (usuario, 1)))
+	transacciones = constructTransaction (pagina)
 	
-	for link in links:
-		print link.get('href')
+	cont = 26
+	while len(transacciones) > 0:
+		transacciones_totales_sujeto.extend(transacciones)
+		pagina = BeautifulSoup(_parsePage(userLinkConstructor (usuario, cont)))
+		transacciones = constructTransaction (pagina)
+		cont += 25
+		
+	return transacciones_totales_sujeto
 
-def userLinkConstructor (user):
-	"""
-	Toma un identificador de usuario y devuelve un link para ir al perfil de ese usuario
-	
-	Argumentos
-	----------
-	user: usuario del que se quiere obtener le link
-	
-	Devuelve
-	----------
-	link al profile del usuario
-	"""
-	
-	return 'http://www.mercadolibre.com.ar/jm/profile?id=%s&oper=S' %(user,)
-
-def constructTransaction (link_list):
+def constructTransaction (page):
 	"""
 	Dada una lista de links filtra los que son transaccion y construye el objeto
 	## modelo de objeto transaccion
@@ -88,35 +95,48 @@ def constructTransaction (link_list):
 	
 	"""
 	
-def getNumeroPaginas (soup_object):
-	"""
-	toma el numero de interacciones totales y lo divide por 25 lo que da el numero de veces que hay que paginar
-	"""
-	
-	return page_number
+	transacciones = []
+	elementos = page.find_all('div', {'id': 'content_box'})
+	##print len(elementos)
+	for elemento in elementos:
+		comprador = elemento.a.get('href').split('(')[1].split(',')[0]
+		vendedor = elemento.a.get('href').split('(')[1].split(',')[1]
+		item = elemento.a.get('href').split('(')[1].split(',')[3].split(')')[0]
+		calificacion = elemento.div.img.get('src').split('/')[-1].split('.')[0]
+		transaccion = {'comprador': comprador, 'vendedor': vendedor, 'item': item, 'calificacion': calificacion}
+		##print transaccion
+		
+		## agrega el nodo al grafo aca, hay que ponerlo en otro lado!!!
+		G.add_edge(userLinkConstructor(vendedor, 1), userLinkConstructor(comprador,1))
+		
+		transacciones.append(transaccion)
+		lista_espera.append(comprador)
+	##print 'largo de las transacciones ',len(transacciones)
+	return transacciones
 
 if __name__ == '__main__':
-
+	
 	##http://www.mercadolibre.com.ar/jm/profile?id=82640759&oper=S
 	
 	## usuario de origen del proceso
 	usuario = '82640759'
 	
-	getTransactions(userLinkConstructor(usuario))
+	## crear objeto grafo
+	G = nx.DiGraph() 
 	
 	## lista de espera
 	lista_espera = [usuario,]
 	## lista de procesados
 	lista_procesados = []
 	
-	for ciclo in range(10):
+	for ciclo in range(200):
+		
 		if len(lista_espera) > 0:
 			candidato = lista_espera.pop()
-			
 			if candidato not in lista_procesados:
-				getTransactions()
-				lista_espera.extend(compradores)
-				lista_procesados.extend(candidato)
-				
-			
-			
+				getTransactions (candidato)
+				lista_procesados.append(candidato)
+		
+		nx.write_graphml(G, '/home/gonza/Escritorio/grafoml.graphml')
+		
+		print ciclo
