@@ -6,6 +6,9 @@ import urllib2
 from bs4 import BeautifulSoup
 import cookielib
 import networkx as nx
+import time
+import random
+import socket, errno
 
 def _parsePage(url):
 	"""
@@ -122,21 +125,33 @@ if __name__ == '__main__':
 	usuario = '82640759'
 	
 	## crear objeto grafo
-	G = nx.DiGraph() 
+	##G = nx.DiGraph() 
+	G = nx.Graph() 
 	
 	## lista de espera
 	lista_espera = [usuario,]
 	## lista de procesados
 	lista_procesados = []
 	
-	for ciclo in range(200):
+	for ciclo in range(10000):
 		
 		if len(lista_espera) > 0:
-			candidato = lista_espera.pop()
-			if candidato not in lista_procesados:
-				getTransactions (candidato)
-				lista_procesados.append(candidato)
-		
-		nx.write_graphml(G, '/home/gonza/Escritorio/grafoml.graphml')
+			try:
+				
+				candidato = lista_espera.pop()
+				if candidato not in lista_procesados:
+					getTransactions (candidato)
+					lista_procesados.append(candidato)
+			
+				nx.write_graphml(G, '/home/gonza/Escritorio/grafoml_2.graphml')
+				##time.sleep(random.randint(5, 10))
+				
+			except socket.error as e:
+				if e.errno == errno.ECONNREFUSED:
+					print 'Desconectado durmiendo por 60 segs'
+					time.sleep(60)
+				else:
+					raise
 		
 		print ciclo
+		
