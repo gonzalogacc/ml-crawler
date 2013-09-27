@@ -17,16 +17,20 @@ import random
 import socket, errno
 import sys
 import psycopg2 as pg
+import re
 
 def connectDatabase ():
 	"""
 	Se conecta a la base de datos para almacenar la info
+	To-Do: Agregar los argumentos a la funcion para especificar hosts y passes
 	
 	Argumentos
 	-------------
+	None
 	
 	Devuelve
 	-------------
+	None
 	
 	"""
 	
@@ -37,13 +41,16 @@ def connectDatabase ():
 	
 def _parsePage(url):
 	"""
-	Toma un url y devuelve la pagina parseada como una cadena de texto
+	Toma un url y devuelve la pagina parseada como una cadena de texto, 
+	generalmente eso se pasa como argumento a BeautifullSoup
 	
 	Argumentos
 	----------
+	url: direccion de la pagina a parsear
 	
 	Devuelve
 	----------
+	the_page: pagina parseada como texto
 	
 	"""
 
@@ -64,20 +71,22 @@ def _parsePage(url):
 
 def userLinkConstructor (user, base):
 	"""
-	Toma un identificador de usuario y devuelve un link para ir al perfil de ese usuario
+	Toma un identificador de usuario y devuelve un link para ir al perfil de ese usuario 
+	paginado a una transaccion determinada por base
 	
 	Argumentos
 	----------
-	user: usuario del que se quiere obtener le link
+	user: usuario del que se quiere obtener le link para obtener las transacciones
+	base: entero que representa a partir de que transaccion se va a paginar
 	
 	Devuelve
 	----------
-	link al profile del usuario
+	link al profile del usuario paginado a una determinada transaccion dada por base
 	"""
 	
 	return 'http://www.mercadolibre.com.ar/jm/profile?id=%s&oper=S&baseLista=%d' %(user, base)
 
-def getTransactions (usuario):
+def getTransactions (conexion, usuario):
 	"""
 	Dado un usuario devuelve las transacciones comerciales que este realizo y una lista de los usuarios con los que comercio
 	
@@ -95,18 +104,17 @@ def getTransactions (usuario):
 	
 	## Obtego la pagina
 	pagina = BeautifulSoup(_parsePage(userLinkConstructor (usuario, 1)))
-	transacciones = constructTransaction (pagina)
+	transacciones = constructTransaction (conexion, pagina)
 	cont = 26
 	while len(transacciones) > 0:
 		transacciones_totales_sujeto.extend(transacciones)
 		pagina = BeautifulSoup(_parsePage(userLinkConstructor (usuario, cont)))
-		transacciones = constructTransaction (pagina)
+		transacciones = constructTransaction (conexion, pagina)
 		cont += 25
-		
-	return transacciones_totales_sujeto
-
 	
-def constructTransaction (page):
+	return transacciones_totales_sujeto
+	
+def constructTransaction (conexion, page):
 	"""
 	Dada una lista de links filtra los que son transaccion y construye el objeto
 	## modelo de objeto transaccion
@@ -129,47 +137,44 @@ def constructTransaction (page):
 	
 	## Toma la lista de usuarios que estan procesados y se fija si el acutal esta en esa lista
 	
-	
-			
 	for elemento in elementos:
+		## filtra las transacciones en las que el comprador actua como vendedor para no mapear las cosas dos veces
+		if _getSentidoTransaccion(elemento) == 'vendio':
+			
+			## el primero de la lista es el comprador, el segundo el vendedor
+			comprador = _getComprador(elemento)
+			vendedor = _getVendedor(elemento)
+			item, item_link = _getItem(elemento)
+			calificacion = _getCalificacion(elemento)
+			precio = _getItemPrice(elemento)
+			fecha = _getFechaTrnasaccion(elemento)
+			
+			try:
+				descripcion = _getRubro (item_link)
+			except:
+				## si no puede btener la descripcion devuelve None, generalmente se da porque el articulo no existe mas
+				descripcion = None
+				
+			transaccion = {'comprador': comprador, 'vendedor': vendedor, 'item': item, 'calificacion': calificacion, 'precio': precio, 'ubicacion_vendedor': ubicacion_vendedor, 'fecha': fecha}
+			##print transaccion
+			
+			## se escriben los datoen en la base
+			print comprador, vendedor
+			_addUser(conexion, comprador, 'pendiente')
+			_addUser(conexion, vendedor, 'procesado')
+			_addTransaction(conexion, transaccion)
+			_addItem(conexion, item, descripcion, precio, item_link)
+			_updateLocation(conexion, vendedor, ubicacion_vendedor)
 		
-		## el primero de la lista es el comprador, el segundo el vendedor
-		comprador = _getComprador(elemento)
-		vendedor = _getVendedor(elemento)
-		item = _getItem(elemento)
-		calificacion = _getCalificacion(elemento)
-		precio = _getItemPrice(elemento)
-		fecha = _getFechaTrnasaccion(elemento)
-		
-		transaccion = {'comprador': comprador, 'vendedor': vendedor, 'item': item, 'calificacion': calificacion, 'precio': precio, 'ubicacion_vendedor': ubicacion_vendedor, 'fecha': fecha}
-		##print transaccion
-		
-		## se escriben los datoen en la base
-		_addUser(comprador, 'pendiente')
-		_addUser(vendedor, 'mapeado')
-		_addTransaction(transaccion)
-		
-		## agrega el nodo al grafo aca, hay que ponerlo en otro lado!!!
-		##G.add_edge(userLinkConstructor(vendedor, 1), userLinkConstructor(comprador,1), precio=precio, fecha=fecha)
-		
-		transacciones.append(transaccion)
-		lista_espera.append(comprador)
-	##print 'largo de las transacciones ',len(transacciones)
+		else:
+			print 'Transaccion como comprador y se saltea'
+			
+	conexion.commit()
 	return transacciones
-	
-def _addTransaction (transaccion):
-	"""
-	Agrega una transaccion a la base de datos
-	"""
-	
-	cursor.execute(cursor.mogrify("INSERT INTO transacciones (id_comprador, id_vendedor, id_item, calificacion, fecha, comentario, monto) VALUES (%s, %s, %s, %s, %s, %s, %s)", \
-					(transaccion['comprador'], transaccion['vendedor'], transaccion['item'], transaccion['calificacion'], transaccion['fecha'], 'Comentario', -999)))
-	
-	return None
 
-def _addUser (id_usuario, status):
+def _updateLocation (conexion, id_usuario, ubicacion):
 	"""
-	Dadas las caracteristicas de un usuario las agrega a la tabla de usuarios
+	Actualiza la ubicacion de un usuario si la ubicacion 
 	
 	Argumentos
 	-----------
@@ -179,63 +184,23 @@ def _addUser (id_usuario, status):
 	
 	"""
 	
-	cursor.execute(cursor.mogrify("SELECT '1' FROM usuarios WHERE id_usuario = %s", (id_usuario, )))
+	cursor.execute(cursor.mogrify("SELECT '1' FROM usuarios WHERE id_usuario = %s and ubicacion is NULL", (id_usuario, )))
 	existe = cursor.fetchone()
 	##print existe
+	
 	if existe is not None:
-		return id_usuario
-		
-	else:
-		cursor.execute(cursor.mogrify("INSERT INTO usuarios (id_usuario, status) VALUES (%s, %s)", (id_usuario, status)))
-		
-		print 'El %s usuario no esta en la base y se va a agregar' %(id_usuario,)
-		
-		return id_usuario
+		cursor.execute(cursor.mogrify("UPDATE usuarios SET ubicacion = %s where id_usuario = %s", (ubicacion, id_usuario)))
+		conexion.commit()
+	
+	return None
 
 def _getUbicacionUsuario (page):
 	"""
-	Dada una pagina web devuelve la ubicacion del usuario
+	Dada una pagina devuelve la ubicacion del usuario
 	"""
 	
 	ubicacion = page.find('div', {'id': 'sitesince'}).text.split(':')[-1]
-	
 	return ubicacion
-
-def _getListaProcesados ():
-	"""
-	Consulta en la DB la lista de los usuarios que ya fueron procesados
-	
-	Argumentos
-	------------
-	
-	Devuelve
-	------------
-	
-	"""
-	
-	cursor.execute("SELECT id_usuario FROM usuarios WHERE status = 'pendiente'")
-	lista_procesados = cursor.fetchall()
-	
-	return lista_procesados
-
-def _updateUserStatus (id_usuario, new_status):
-	"""
-	Actualiza el status del usuario
-	
-	Argumentos
-	------------
-	id_usuario: usuario al cual se le actualiza el status
-	new_status: nuevo status
-	
-	Devuelve
-	------------
-	None
-	"""
-	
-	cursor.execute(cursor.mogrify("UPDATE usuarios SET status = %s where id_usuario = %s", (new_status, id_usuario)))
-	connection.commit()
-	
-	return None
 
 def _getItemPrice (elemento):
 	"""
@@ -250,11 +215,18 @@ def _getItemPrice (elemento):
 	price: precio del elemento si es que hay
 	"""
 	
-	price = elemento.find('div', {'id': 'compra_texto'}).text.split('$')[-1]
+	non_decimal = re.compile(r'[^\d.]+')
 	
+	price = non_decimal.sub('', elemento.find('div', {'id': 'compra_texto'}).text.split('$')[-1])
+	
+	try:
+		price = float(price)
+	except:
+		price = None
+		
 	return price
 
-def getSentidoTransaccion (elemento):
+def _getSentidoTransaccion (elemento):
 	"""
 	Dado un elemento de transaccion completo, devuelve el sentido en el que se realizo. 
 	Si fue una compra o una venta del usuario
@@ -268,8 +240,19 @@ def getSentidoTransaccion (elemento):
 	
 	"""
 	
-	return sentido_transaccion
-
+	compro = re.compile('vendió')
+	vendio = re.compile('compró')
+	texto_transaccion = elemento.find('div', {'id': 'compra_texto'}).text
+	
+	if 'vendi' in texto_transaccion.lower():
+		return 'vendio'
+	
+	elif 'compr' in texto_transaccion.lower():
+		return 'compro'
+	
+	else:
+		return None
+		
 def _getComprador (elemento):
 	"""
 	Dado un elemento de transaccion completo, devuelve el comprador. 
@@ -307,13 +290,59 @@ def _getItem (elemento):
 	Argumentos
 	-----------
 	elemento: es el objeto que devuelve bs4 cuando se filtra el div que corresponde a una transaccion completa
-
+	
+	Devuelve
+	-----------
+	item: codigo del item que se esta comerciando
+	
 	"""
 	
-	item = elemento.a.get('href').split('(')[1].split(',')[3].split(')')[0]
 	
-	return item
+	item = elemento.a.get('href').split('(')[1].split(',')[3].split(')')[0]
+	item_link = 'http://www.mercadolibre.com.ar/jm/item?site=MLA&id=%s' %(item,)
+	return item, item_link
 
+def _getRubro (item_link):
+	"""
+	Dado un link de un item de mercadolibre devuelve el rubro en el que se vende
+	
+	Argumentos
+	-----------
+	
+	Devuelve
+	----------
+	
+	"""
+	
+	soup = BeautifulSoup(_parsePage(item_link))
+	rubro = soup.find('a', {'id' :'lastCategPath'})
+	
+	return rubro.get('href')
+
+	
+def _addItem (conexion, item, rubro, monto, link):
+	"""
+	Agrega a la base las caracteristicas de un item
+	
+	Argumentos
+	----------
+	
+	Devuelve
+	----------
+	
+	"""
+	
+	cursor.execute(cursor.mogrify("SELECT '1' FROM inventario_items WHERE id_item = %s", (item, )))
+	existe = cursor.fetchone()
+	##print existe
+	
+	if existe is None:
+		cursor.execute(cursor.mogrify("INSERT INTO inventario_items (id_item, rubro, monto, link) VALUES (%s, %s, %s,%s)", (item, rubro, monto, link)))
+		##cursor.execute(cursor.mogrify("INSERT INTO inventario_items (id_item, rubro, monto) VALUES (%s, %s, %s)", (item, rubro, monto,)))
+		conexion.commit()
+	
+	return None
+	
 def _getCalificacion (elemento):
 	"""
 	Dado un elemento de transaccion completo, devuelve la calificacion. 
@@ -346,45 +375,127 @@ def _getComment ():
 	##return comment
 	return None
 
+
+def _getListaProcesados ():
+	"""
+	Consulta en la DB la lista de los usuarios que ya fueron procesados
+	
+	Argumentos
+	------------
+	
+	Devuelve
+	------------
+	
+	"""
+	
+	cursor.execute("SELECT id_usuario FROM usuarios WHERE status = 'pendiente'")
+	lista_procesados = cursor.fetchall()
+	
+	return lista_procesados
+	
+def _addTransaction (conexion, transaccion):
+	"""
+	Agrega una transaccion a la base de datos
+	"""
+	
+	cursor.execute(cursor.mogrify("INSERT INTO transacciones (id_comprador, id_vendedor, id_item, calificacion, fecha, comentario, monto) VALUES (%s, %s, %s, %s, %s, %s, %s)", \
+					(transaccion['comprador'], transaccion['vendedor'], transaccion['item'], transaccion['calificacion'], transaccion['fecha'], 'Comentario', transaccion['precio'])))
+	conexion.commit()
+	
+	return None
+
+def _addUser (conexion, id_usuario, status):
+	"""
+	Dadas las caracteristicas de un usuario las agrega a la tabla de usuarios
+	
+	Argumentos
+	-----------
+	
+	Devuelve
+	-----------
+	
+	"""
+	
+	cursor.execute(cursor.mogrify("SELECT '1' FROM usuarios WHERE id_usuario = %s", (id_usuario, )))
+	existe = cursor.fetchone()
+	##print existe
+	if existe is not None:
+		return id_usuario
+		
+	else:
+		cursor.execute(cursor.mogrify("INSERT INTO usuarios (id_usuario, status) VALUES (%s, %s)", (id_usuario, status)))
+		conexion.commit()
+		print 'El %s usuario no esta en la base y se va a agregar' %(id_usuario,)
+		
+		return id_usuario
+
+def _getJob (conexion):
+	"""
+	Busca trabajos pendientes para alimentar a la base de datos
+	
+	Argumentos
+	------------
+	
+	Devuelve
+	------------
+	
+	"""
+	## buscar un usuario para ejecutar
+	cursor.execute("SELECT max(id_usuario) from usuarios where status = 'pendiente';")
+	id_usuario = cursor.fetchone()[0]
+	
+	## cambiar el status de usuario por 'procesando'
+	_updateUserStatus(conexion, id_usuario, 'procesando')
+	## devulve
+	
+	return id_usuario
+
+def _updateUserStatus (connection, id_usuario, new_status):
+	"""
+	Actualiza el status del usuario
+	
+	Argumentos
+	------------
+	id_usuario: usuario al cual se le actualiza el status
+	new_status: nuevo status
+	
+	Devuelve
+	------------
+	None
+	"""
+	
+	cursor.execute(cursor.mogrify("UPDATE usuarios SET status = %s where id_usuario = %s", (new_status, id_usuario)))
+	connection.commit()
+	
+	return None
+
 if __name__ == '__main__':
 	
 	##http://www.mercadolibre.com.ar/jm/profile?id=82640759&oper=S
 	
 	conexion, cursor = connectDatabase()
 	
-	## usuario de origen del proceso
-	usuario = '82640759'
-	
-	## crear objeto grafo 
-	##G = nx.Graph() 
-	
-	## lista de espera
-	lista_espera = [usuario,]
-	
-	## lista de procesados
-	##lista_procesados = _getListaProcesados()
-	
-	
 	for ciclo in range(int(sys.argv[1])):
 		
-		if len(lista_espera) > 0:
-			try:
-				
-				candidato = lista_espera.pop()
-				if candidato not in _getListaProcesados():
-					getTransactions (candidato)
-					conexion.commit()
-				else:
-					print 'El candidato %s ya fue procesado' %(candidato, )
-				##nx.write_graphml(G, sys.argv[2]+'.graphml')
-				##time.sleep(random.randint(5, 10))
-				
-			except socket.error as e:
-				if e.errno == errno.ECONNREFUSED:
-					print 'Desconectado durmiendo por 60 segs'
-					time.sleep(60)
-				else:
-					raise
+		try:
+			
+			## busca un candidato pendiente
+			candidato = _getJob(conexion)
+			
+			##print candidato
+			
+			## Busca las transacciones a procesar
+			print getTransactions (conexion, candidato)
+			
+			## pasa el status del usuario a procesado
+			_updateUserStatus(conexion, candidato, 'procesado')
+			
+		except socket.error as e:
+			if e.errno == errno.ECONNREFUSED:
+				print 'Desconectado durmiendo por 60 segs'
+				time.sleep(60)
+			else:
+				raise
 		
-		print ciclo
+	print ciclo
 		
